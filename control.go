@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"encoding/json"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
@@ -32,7 +33,7 @@ func broadcast(message []byte) error{
 	return nil
 }
 
-func receive(/*stopCh <-chan struct{}*/) {
+func receive() {
 	socket, err := net.ListenUDP("udp",  &net.UDPAddr{IP: net.IPv4zero, Port: RemoteReceivePort})
 	if err != nil {
 		fmt.Println(err)
@@ -54,6 +55,8 @@ func receive(/*stopCh <-chan struct{}*/) {
 	}
 }
 
+type processor func(map[string]interface{})
+
 func processing(message []byte) {
 	var f interface{}
 
@@ -70,10 +73,14 @@ func processing(message []byte) {
 func newMQTTClientOptions(uri, port, username, password string) *MQTT.ClientOptions {
 	opts := MQTT.NewClientOptions()
 
+	if port == "" {
+		port = "1883"
+	}
+
 	broker := "tcp://" + uri + ":" + port
 	opts.AddBroker(broker)
 	opts.SetClientID("SmartControl CLI")
-	
+
 	if username != "" {
 		opts.SetUsername(username)
 	}
@@ -127,12 +134,14 @@ func subscribe(topic, uri, port, username, password string) {
 	}
 }
 
+// Discover send an UDP request and actively listen on device feedback 
 func Discover() {
 	go broadcast([]byte(`{"cmd": "device report"}`))
 
 	receive()
 }
 
+// AdoptDevice initialize MQTT settings to device via UDP
 func AdoptDevice(mac, uri, port, username, password string) error {
 	payload := map[string]interface{}{
 		"mac": mac,
@@ -155,6 +164,7 @@ func AdoptDevice(mac, uri, port, username, password string) error {
 	return nil
 }
 
+// ActivateDevice activates the device by given code
 func ActivateDevice(mac, code, uri, port, username, password string) error {
 	payload := map[string]interface{}{
 		"mac": mac,
@@ -178,10 +188,78 @@ func ActivateDevice(mac, code, uri, port, username, password string) error {
 	return nil
 }
 
+// DevicePower subscribe MQTT topic to get device sensor information (power/uptime)
 func DevicePower(mac, uri, port, username, password string) {
 	topic := "device/ztc1/" + mac + "/sensor"
 
 	subscribe(topic, uri, port, username, password)
+}
+
+// DeviceState subscribe MQTT topic to get device state information (plug on/off state)
+func DeviceState(mac, uri, port, username, password string) {
+	topic := "device/ztc1/" + mac + "/state"
+
+	subscribe(topic, uri, port, username, password)
+}
+
+// SwitchPlug switches specific plug (0~5) on/off state
+func SwitchPlug(mac, uri, port, username, password string, plugIndex int, on bool) error {
+	topic := "device/ztc1/" + mac + "/set"
+
+	onFlag := 0
+	if on {
+		onFlag = 1
+	}
+
+	payload := map[string]interface{}{
+		"mac": mac,
+		"plug_" + strconv.Itoa(plugIndex): map[string]interface{}{
+			"on": onFlag,
+		},
+	}
+
+	msg, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	err = publish(topic, msg, uri, port, username, password)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	return nil
+}
+
+// UpgradeDevice upgrades device via an OTA uri
+func UpgradeDevice(mac, uri, port, username, password, otaUri string) error {
+	topic := "device/ztc1/" + mac + "/set"
+
+	payload := map[string]interface{}{
+		"mac": mac,
+		"setting": map[string]interface{}{
+			"ota": otaUri,
+		},
+	}
+
+	msg, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	err = publish(topic, msg, uri, port, username, password)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	// after upgrade it would use UDP to receive progress
+	go receive()
+
+	return nil
 }
 
 func main() {
