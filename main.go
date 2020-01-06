@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 	"net"
-	"strconv"
 	"flag"
 	"os"
+	"strconv"
 	"time"
 	"encoding/json"
 
@@ -18,13 +18,13 @@ const (
 	// RemoteSendPort remote device port to send data
 	RemoteSendPort 	  int = 10182 
 	// interval defines the progress bar used
-	interval time.Duration = 500 * time.Millisecond
+	interval time.Duration = 1000 * time.Millisecond
 )
 
 type processor func(map[string]interface{})
 
 // process handles the message
-func process(message []byte) {
+func process(message []byte, proc processor) {
 	var f interface{}
 
 	err := json.Unmarshal(message, &f)
@@ -34,7 +34,7 @@ func process(message []byte) {
 	}
 
 	msg := f.(map[string]interface{})
-	fmt.Printf("%s\n", msg)
+	proc(msg)
 }
 
 type send func(message []byte) error 
@@ -83,10 +83,6 @@ func receive(recvCh chan []byte) {
 func newMQTTClientOptions(uri, port, username, password string) *MQTT.ClientOptions {
 	opts := MQTT.NewClientOptions()
 
-	if port == "" {
-		port = "1883"
-	}
-
 	broker := "tcp://" + uri + ":" + port
 	opts.AddBroker(broker)
 	opts.SetClientID("SmartControl CLI")
@@ -119,7 +115,7 @@ func publish(topic string, message []byte, uri, port, username, password string)
 }
 
 // subscribe receives message on a specific topic
-func subscribe(topic, uri, port, username, password string) {
+func subscribe(topic, uri, port, username, password string, proc processor) {
 	opts := newMQTTClientOptions(uri, port, username, password)
 	choke := make(chan MQTT.Message)
 
@@ -142,7 +138,7 @@ func subscribe(topic, uri, port, username, password string) {
 
 	for {
 		msg := <- choke
-		go process(msg.Payload())
+		go process(msg.Payload(), proc)
 	}
 }
 
@@ -155,13 +151,24 @@ func Discover() {
 	recvCh := make(chan []byte)
 	go receive(recvCh)
 
-	select {
-	case <-tick:
-		fmt.Print(".")
-	case resp := <- recvCh:
-		process(resp)
-	case <-time.After(30 * time.Second):
-		fmt.Println("Timeout finding device, please try again")
+	proc := func(r map[string]interface{}) {
+		name, _ := r["name"]
+		mac, _ := r["mac"]
+		deviceType, _ := r["type"]
+		ip, _ := r["ip"] 
+
+		fmt.Printf("Device found! Type: %s, Name, %s, Mac: %s, IP: %s\n", deviceType, name, mac, ip)
+	}
+
+	for {
+		select {
+		case <-tick:
+			fmt.Print(".") // progress bar, maximumly 60 dots would be printed
+		case resp := <- recvCh:
+			process(resp, proc)
+		case <-time.After(30 * time.Second):
+			fmt.Println("Timeout finding device, consider UDP is not reliable, you may try again later")
+		}
 	} 
 }
 
@@ -183,6 +190,7 @@ func AdoptDevice(mac, uri, port, username, password string) error {
 		return err
 	}
 
+	fmt.Println("Adopt by sending MQTT server information to device")
 	broadcast(msg)
 
 	return nil
@@ -215,15 +223,38 @@ func ActivateDevice(mac, code, uri, port, username, password string) error {
 // DevicePower subscribe MQTT topic to get device sensor information (power/uptime)
 func DevicePower(mac, uri, port, username, password string) {
 	topic := "device/ztc1/" + mac + "/sensor"
+	proc := func(r map[string]interface{}) {
+		power, _ := r["power"]
+		uptime, _ := r["total_time"]
 
-	subscribe(topic, uri, port, username, password)
+		fmt.Printf("Power: %sW, Uptime: %d seconds\n", power, uptime)
+	}
+
+	subscribe(topic, uri, port, username, password, proc)
 }
 
 // DeviceState subscribe MQTT topic to get device state information (plug on/off state)
 func DeviceState(mac, uri, port, username, password string) {
 	topic := "device/ztc1/" + mac + "/state"
 
-	subscribe(topic, uri, port, username, password)
+	proc := func(r map[string]interface{}) {
+		index := 0
+		plugState := ""
+
+		for index <= 5 {
+			plug, _ := r["plug_" + strconv.Itoa(index)]
+			state := plug.(map[string]interface{})
+			on, _ := state["on"]
+
+			plugState += fmt.Sprintf("Plug %d: %t ", index, on)
+
+			index ++
+		}
+
+		fmt.Println(plugState)
+	}
+
+	subscribe(topic, uri, port, username, password, proc)
 }
 
 // SwitchPlug switches specific plug (0~5) on/off state
@@ -254,6 +285,9 @@ func SwitchPlug(mac, uri, port, username, password string, plugIndex int, on boo
 		return err
 	}
 
+	// check the state
+	DeviceState(mac, uri, port, username, password)
+
 	return nil
 }
 
@@ -282,13 +316,29 @@ func UpgradeDevice(mac, uri, port, username, password, otaURI string) error {
 
 	// after upgrade it would use UDP to receive progress
 	recvCh := make(chan []byte)
-	go receive(recvCh)
+	progressCh := make(chan bool)
 
-	select {
-	case resp := <- recvCh:
-		process(resp)
-	case <- time.After(120 * time.Second):
-		fmt.Println("Timeout finding device, please try again")
+	proc := func(r map[string]interface{}) {
+		progress, _ := r["ota_progress"]
+		
+		if progress.(int) >= 100 {
+			progressCh <- true
+		}
+
+		fmt.Printf("Upgrade progress: %d%\n", progress)
+	}
+
+	for {
+		receive(recvCh)
+
+		select {
+		case <-progressCh: // upgrade finished
+			return nil
+		case resp := <- recvCh:
+			process(resp, proc)
+		default:
+			time.Sleep(3 * time.Second)
+		}
 	}
 
 	return nil
