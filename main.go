@@ -17,7 +17,7 @@ const (
 	RemoteReceivePort int = 10181 
 	// RemoteSendPort remote device port to send data
 	RemoteSendPort 	  int = 10182 
-	// interval defines the progress bar used
+	// interval defines the progress bar used 
 	interval time.Duration = 1000 * time.Millisecond
 )
 
@@ -136,25 +136,27 @@ func subscribe(topic, uri, port, username, password string, proc processor) {
 		return
 	}
 
-	for {
-		msg := <- choke
-		go process(msg.Payload(), proc)
-	}
+	// for {
+	msg := <- choke
+	go process(msg.Payload(), proc)
+	// }
 }
 
 // Discover send an UDP request and actively listen on device feedback 
 func Discover() {
-	fmt.Print("Broadcast to the local area network")
+	fmt.Print("Broadcast to the local area network, ")
 	go broadcast([]byte(`{"cmd": "device report"}`))
 
 	tick := time.Tick(interval)
 	recvCh := make(chan []byte)
+
+	fmt.Print("wait for device to report.\n")
 	go receive(recvCh)
 
 	proc := func(r map[string]interface{}) {
 		name, _ := r["name"]
 		mac, _ := r["mac"]
-		deviceType, _ := r["type"]
+		deviceType, _ := r["type_name"]
 		ip, _ := r["ip"] 
 
 		fmt.Printf("Device found! Type: %s, Name, %s, Mac: %s, IP: %s\n", deviceType, name, mac, ip)
@@ -166,6 +168,7 @@ func Discover() {
 			fmt.Print(".") // progress bar, maximumly 60 dots would be printed
 		case resp := <- recvCh:
 			process(resp, proc)
+			return
 		case <-time.After(30 * time.Second):
 			fmt.Println("Timeout finding device, consider UDP is not reliable, you may try again later")
 		}
@@ -227,7 +230,7 @@ func DevicePower(mac, uri, port, username, password string) {
 		power, _ := r["power"]
 		uptime, _ := r["total_time"]
 
-		fmt.Printf("Power: %sW, Uptime: %d seconds\n", power, uptime)
+		fmt.Printf("Power: %sW, Uptime: %d seconds\n", power, int(uptime.(float64)))
 	}
 
 	subscribe(topic, uri, port, username, password, proc)
@@ -246,7 +249,7 @@ func DeviceState(mac, uri, port, username, password string) {
 			state := plug.(map[string]interface{})
 			on, _ := state["on"]
 
-			plugState += fmt.Sprintf("Plug %d: %t ", index, on)
+			plugState += fmt.Sprintf("Plug %d: %t\n", index, int(on.(float64)) == 1)
 
 			index ++
 		}
@@ -285,7 +288,8 @@ func SwitchPlug(mac, uri, port, username, password string, plugIndex int, on boo
 		return err
 	}
 
-	// check the state
+	// Wait some time and check the state
+	time.Sleep(2 * time.Second)
 	DeviceState(mac, uri, port, username, password)
 
 	return nil
@@ -374,7 +378,7 @@ var (
 func init() {
 	setMQTT := func(f *flag.FlagSet) {
 		f.StringVar(&uri, "uri", "0.0.0.0", "MQTT uri")
-		f.StringVar(&port, "port", "1883", "MQTT port, optional, default is 1883")
+		f.StringVar(&port, "port", "1883", "MQTT port, optional")
 		f.StringVar(&username, "username", "", "MQTT username, optional")
 		f.StringVar(&password, "password", "", "MQTT password, optional")
 	}
@@ -391,7 +395,7 @@ func init() {
 	monitor = flag.NewFlagSet("monitor", flag.ExitOnError)
 	monitor.StringVar(&mac, "mac", "", "Device mac address")
 	monitor.StringVar(&device, "device", "ztc1", "Device type")
-	monitor.StringVar(&monitorType, "monitor", "state", "Monitor type, could be either power or state, default is state")
+	monitor.StringVar(&monitorType, "monitor", "state", "Monitor type, could be either power or state")
 	setMQTT(monitor)
 
 	upgrade = flag.NewFlagSet("upgrade", flag.ExitOnError)
@@ -404,7 +408,7 @@ func init() {
 	switches.StringVar(&mac, "mac", "", "Device mac address")
 	switches.StringVar(&device, "device", "ztc1", "Device type")
 	switches.IntVar(&plug, "plug", 0, "Plug index")
-	switches.BoolVar(&on, "on", true, "Plug on/off, default is on")
+	switches.BoolVar(&on, "on", false, "Plug on/off")
 	setMQTT(switches)
 }
 
