@@ -1,23 +1,23 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
-	"flag"
 	"os"
 	"strconv"
 	"time"
-	"encoding/json"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 )
 
 const (
 	// RemoteReceivePort remote device port to receive data
-	RemoteReceivePort int = 10181 
+	RemoteReceivePort int = 10181
 	// RemoteSendPort remote device port to send data
-	RemoteSendPort 	  int = 10182 
-	// interval defines the progress bar used 
+	RemoteSendPort int = 10182
+	// interval of the progress bar dots
 	interval time.Duration = 1000 * time.Millisecond
 )
 
@@ -37,11 +37,11 @@ func process(message []byte, proc processor) {
 	proc(msg)
 }
 
-type send func(message []byte) error 
+type send func(message []byte) error
 type recv func()
 
 // broadcast to the local network via UDP
-func broadcast(message []byte) error{
+func broadcast(message []byte) error {
 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: RemoteSendPort}
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
@@ -61,22 +61,30 @@ func broadcast(message []byte) error{
 }
 
 // receive listens on specific port
-func receive(recvCh chan []byte) {
-	socket, err := net.ListenUDP("udp",  &net.UDPAddr{IP: net.IPv4zero, Port: RemoteReceivePort})
+func receive(recvCh chan []byte, stopCh chan struct{}) {
+	socket, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: RemoteReceivePort})
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
 	data := make([]byte, 1024)
-	// for {
-	n, _, err := socket.ReadFromUDP(data)
-	if err != nil {
-		fmt.Println("Error occurred while reading: %s", err)
-	}
 
-	recvCh <- data[:n]
-	// }
+	go func() {
+		for {
+			n, _, err := socket.ReadFromUDP(data)
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+
+			recvCh <- data[:n]
+
+		}
+	}()
+
+	<-stopCh
+	socket.Close()
 }
 
 // newMQTTClientOptions initializes a client options, only uri is mandantory
@@ -107,7 +115,7 @@ func publish(topic string, message []byte, uri, port, username, password string)
 		return token.Error()
 	}
 	defer client.Disconnect(250)
-	
+
 	t := client.Publish(topic, byte(0), false, message)
 	t.Wait()
 
@@ -115,12 +123,11 @@ func publish(topic string, message []byte, uri, port, username, password string)
 }
 
 // subscribe receives message on a specific topic
-func subscribe(topic, uri, port, username, password string, proc processor) {
+func subscribe(topic, uri, port, username, password string, recvCh chan MQTT.Message, stopCh chan struct{}) {
 	opts := newMQTTClientOptions(uri, port, username, password)
-	choke := make(chan MQTT.Message)
 
 	opts.SetDefaultPublishHandler(func(client MQTT.Client, msg MQTT.Message) {
-		choke <- msg
+		recvCh <- msg
 	})
 
 	client := MQTT.NewClient(opts)
@@ -136,28 +143,28 @@ func subscribe(topic, uri, port, username, password string, proc processor) {
 		return
 	}
 
-	// for {
-	msg := <- choke
-	go process(msg.Payload(), proc)
-	// }
+	<-stopCh
 }
 
-// Discover send an UDP request and actively listen on device feedback 
+// Discover send an UDP request and actively listen on device feedback
 func Discover() {
 	fmt.Print("Broadcast to the local area network, ")
 	go broadcast([]byte(`{"cmd": "device report"}`))
 
 	tick := time.Tick(interval)
 	recvCh := make(chan []byte)
+	stopCh := make(chan struct{})
+	var signal struct{}
 
 	fmt.Print("wait for device to report.\n")
-	go receive(recvCh)
+	go receive(recvCh, stopCh)
 
 	proc := func(r map[string]interface{}) {
+		stopCh <- signal
 		name, _ := r["name"]
 		mac, _ := r["mac"]
 		deviceType, _ := r["type_name"]
-		ip, _ := r["ip"] 
+		ip, _ := r["ip"]
 
 		fmt.Printf("Device found! Type: %s, Name, %s, Mac: %s, IP: %s\n", deviceType, name, mac, ip)
 	}
@@ -166,13 +173,14 @@ func Discover() {
 		select {
 		case <-tick:
 			fmt.Print(".") // progress bar, maximumly 60 dots would be printed
-		case resp := <- recvCh:
+		case resp := <-recvCh:
 			process(resp, proc)
+
 			return
 		case <-time.After(30 * time.Second):
 			fmt.Println("Timeout finding device, consider UDP is not reliable, you may try again later")
 		}
-	} 
+	}
 }
 
 // AdoptDevice initialize MQTT settings to device via UDP
@@ -180,9 +188,9 @@ func AdoptDevice(mac, uri, port, username, password string) error {
 	payload := map[string]interface{}{
 		"mac": mac,
 		"setting": map[string]interface{}{
-			"mqtt_uri": uri,
-			"mqtt_port": port,
-			"mqtt_user": username,
+			"mqtt_uri":      uri,
+			"mqtt_port":     port,
+			"mqtt_user":     username,
 			"mqtt_password": password,
 		},
 	}
@@ -202,7 +210,7 @@ func AdoptDevice(mac, uri, port, username, password string) error {
 // ActivateDevice activates the device by given code
 func ActivateDevice(mac, code, uri, port, username, password string) error {
 	payload := map[string]interface{}{
-		"mac": mac,
+		"mac":  mac,
 		"lock": code,
 	}
 
@@ -226,6 +234,8 @@ func ActivateDevice(mac, code, uri, port, username, password string) error {
 // DevicePower subscribe MQTT topic to get device sensor information (power/uptime)
 func DevicePower(mac, uri, port, username, password string) {
 	topic := "device/ztc1/" + mac + "/sensor"
+	recvCh := make(chan MQTT.Message)
+
 	proc := func(r map[string]interface{}) {
 		power, _ := r["power"]
 		uptime, _ := r["total_time"]
@@ -233,31 +243,54 @@ func DevicePower(mac, uri, port, username, password string) {
 		fmt.Printf("Power: %sW, Uptime: %d seconds\n", power, int(uptime.(float64)))
 	}
 
-	subscribe(topic, uri, port, username, password, proc)
+	subscribe(topic, uri, port, username, password, recvCh, nil)
+
+	for {
+		select {
+		case msg := <-recvCh:
+			process(msg.Payload(), proc)
+		default:
+			time.Sleep(1 * time.Second)
+		}
+	}
 }
 
 // DeviceState subscribe MQTT topic to get device state information (plug on/off state)
 func DeviceState(mac, uri, port, username, password string) {
 	topic := "device/ztc1/" + mac + "/state"
+	recvCh := make(chan MQTT.Message)
+	stopCh := make(chan struct{})
 
 	proc := func(r map[string]interface{}) {
+		var signal struct{}
+		stopCh <- signal
+
 		index := 0
 		plugState := ""
 
 		for index <= 5 {
-			plug, _ := r["plug_" + strconv.Itoa(index)]
+			plug, _ := r["plug_"+strconv.Itoa(index)]
 			state := plug.(map[string]interface{})
 			on, _ := state["on"]
 
 			plugState += fmt.Sprintf("Plug %d: %t\n", index, int(on.(float64)) == 1)
 
-			index ++
+			index++
 		}
 
 		fmt.Println(plugState)
 	}
 
-	subscribe(topic, uri, port, username, password, proc)
+	subscribe(topic, uri, port, username, password, recvCh, stopCh)
+
+	for {
+		select {
+		case msg := <-recvCh:
+			process(msg.Payload(), proc)
+		default:
+			time.Sleep(1 * time.Second)
+		}
+	}
 }
 
 // SwitchPlug switches specific plug (0~5) on/off state
@@ -285,6 +318,10 @@ func SwitchPlug(mac, uri, port, username, password string, plugIndex int, on boo
 	err = publish(topic, msg, uri, port, username, password)
 	if err != nil {
 		fmt.Println(err)
+
+		// consider using UDP as a fallback
+		fmt.Printf("MQTT server is not available, use UDP broadcast")
+		broadcast(msg)
 		return err
 	}
 
@@ -318,60 +355,55 @@ func UpgradeDevice(mac, uri, port, username, password, otaURI string) error {
 		return err
 	}
 
+	var signal struct{}
+
 	// after upgrade it would use UDP to receive progress
 	recvCh := make(chan []byte)
-	progressCh := make(chan bool)
+	stopCh := make(chan struct{})
+	receive(recvCh, stopCh)
 
 	proc := func(r map[string]interface{}) {
 		progress, _ := r["ota_progress"]
-		
-		if progress.(int) >= 100 {
-			progressCh <- true
+
+		if progress.(float64) >= 100 {
+			stopCh <- signal
 		}
 
-		fmt.Printf("Upgrade progress: %d%\n", progress)
+		fmt.Printf("Upgrade progress: %d%%\n", progress)
 	}
 
 	for {
-		receive(recvCh)
-
 		select {
-		case <-progressCh: // upgrade finished
-			return nil
-		case resp := <- recvCh:
+		case resp := <-recvCh:
 			process(resp, proc)
 		default:
 			time.Sleep(3 * time.Second)
 		}
 	}
-
-	return nil
 }
 
 var (
-	help bool
-
-	mac string
+	mac    string
 	device string
 
-	monitorType string 
+	monitorType string
 
 	lock string
 
-	uri string
-	port string
+	uri      string
+	port     string
 	username string
 	password string
-	
+
 	ota string
 
 	plug int
-	on bool
+	on   bool
 
-	adopt *flag.FlagSet
+	adopt    *flag.FlagSet
 	activate *flag.FlagSet
-	monitor *flag.FlagSet
-	upgrade *flag.FlagSet
+	monitor  *flag.FlagSet
+	upgrade  *flag.FlagSet
 	switches *flag.FlagSet
 )
 
@@ -382,11 +414,11 @@ func init() {
 		f.StringVar(&username, "username", "", "MQTT username, optional")
 		f.StringVar(&password, "password", "", "MQTT password, optional")
 	}
-		
+
 	adopt = flag.NewFlagSet("adopt", flag.ExitOnError)
 	adopt.StringVar(&mac, "mac", "", "Device mac address")
 	setMQTT(adopt)
-	
+
 	activate = flag.NewFlagSet("activiate", flag.ExitOnError)
 	activate.StringVar(&mac, "mac", "", "Device mac address")
 	activate.StringVar(&lock, "code", "", "Activate code")
@@ -403,7 +435,7 @@ func init() {
 	upgrade.StringVar(&device, "device", "ztc1", "Device type")
 	upgrade.StringVar(&ota, "ota", "", "OTA address")
 	setMQTT(upgrade)
-	
+
 	switches = flag.NewFlagSet("switch", flag.ExitOnError)
 	switches.StringVar(&mac, "mac", "", "Device mac address")
 	switches.StringVar(&device, "device", "ztc1", "Device type")
