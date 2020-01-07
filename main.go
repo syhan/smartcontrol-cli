@@ -250,12 +250,8 @@ func DevicePower(mac, uri, port, username, password string) {
 	go subscribe(topic, uri, port, username, password, recvCh, nil)
 
 	for {
-		select {
-		case msg := <-recvCh:
-			process(msg.Payload(), proc)
-		default:
-			time.Sleep(1 * time.Second)
-		}
+		msg := <-recvCh
+		process(msg.Payload(), proc)
 	}
 }
 
