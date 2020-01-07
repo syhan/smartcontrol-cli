@@ -59,5 +59,5 @@ Control each plug switch on/off status, if MQTT server is not provided or not av
 Schedule is not yet supported
 
 #### Upgrade
-Upgrade device via OTA
+Upgrade device via OTA  
 `zcontrol.exe -mac 11111111e10d -ota http://192.168.43.119/TC1_MK3031_moc.ota.bin -uri 10.0.0.124`
