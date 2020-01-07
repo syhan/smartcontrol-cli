@@ -247,7 +247,7 @@ func DevicePower(mac, uri, port, username, password string) {
 		fmt.Printf("Power: %sW, Uptime: %d seconds\n", power, int(uptime.(float64)))
 	}
 
-	subscribe(topic, uri, port, username, password, recvCh, nil)
+	go subscribe(topic, uri, port, username, password, recvCh, nil)
 
 	for {
 		select {
@@ -285,16 +285,11 @@ func DeviceState(mac, uri, port, username, password string) {
 		fmt.Println(plugState)
 	}
 
-	subscribe(topic, uri, port, username, password, recvCh, stopCh)
+	go subscribe(topic, uri, port, username, password, recvCh, stopCh)
 
-	for {
-		select {
-		case msg := <-recvCh:
-			process(msg.Payload(), proc)
-		default:
-			time.Sleep(1 * time.Second)
-		}
-	}
+	
+	msg := <-recvCh
+	process(msg.Payload(), proc)
 }
 
 // SwitchPlug switches specific plug (0~5) on/off state
