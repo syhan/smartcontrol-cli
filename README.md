@@ -51,13 +51,13 @@ Plug 4: true
 Plug 5: true
 ```
 
-#### Switch
+### Switch
 Control each plug switch on/off status, if MQTT server is not provided or not available, it would try to use UDP instead  
 - Switch plug 0 on  `zcontrol.exe switch -mac 11111111e10d -plug 0 -on -uri 10.0.0.124`  
 - Switch plug 2 off `zcontrol.exe switch -mac 11111111e10d -plug 2`
 
 Schedule is not yet supported
 
-#### Upgrade
+### Upgrade
 Upgrade device via OTA  
 `zcontrol.exe -mac 11111111e10d -ota http://192.168.43.119/TC1_MK3031_moc.ota.bin -uri 10.0.0.124`
