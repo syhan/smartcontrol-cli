@@ -166,7 +166,7 @@ func Discover() {
 		deviceType, _ := r["type_name"]
 		ip, _ := r["ip"]
 
-		fmt.Printf("Device found! Type: %s, Name, %s, Mac: %s, IP: %s\n", deviceType, name, mac, ip)
+		fmt.Printf("Device found! Type: %s, Name: %s, Mac: %s, IP: %s\n", deviceType, name, mac, ip)
 	}
 
 	for {
@@ -225,6 +225,10 @@ func ActivateDevice(mac, code, uri, port, username, password string) error {
 
 	if err != nil {
 		fmt.Println(err)
+
+		// consider using UDP as a fallback
+		fmt.Printf("MQTT server is not available, use UDP broadcast")
+		err = broadcast(msg)
 		return err
 	}
 
@@ -321,7 +325,7 @@ func SwitchPlug(mac, uri, port, username, password string, plugIndex int, on boo
 
 		// consider using UDP as a fallback
 		fmt.Printf("MQTT server is not available, use UDP broadcast")
-		broadcast(msg)
+		err = broadcast(msg)
 		return err
 	}
 
