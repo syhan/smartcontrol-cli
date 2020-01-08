@@ -88,12 +88,12 @@ func receive(recvCh chan []byte, stopCh chan struct{}) {
 }
 
 // newMQTTClientOptions initializes a client options, only uri is mandantory
-func newMQTTClientOptions(uri, port, username, password string) *MQTT.ClientOptions {
+func newMQTTClient(uri, port, username, password string) MQTT.Client {
 	opts := MQTT.NewClientOptions()
 
 	broker := "tcp://" + uri + ":" + port
 	opts.AddBroker(broker)
-	opts.SetClientID("SmartControl CLI")
+	opts.SetClientID("SmartControl-CLI")
 
 	if username != "" {
 		opts.SetUsername(username)
@@ -103,18 +103,17 @@ func newMQTTClientOptions(uri, port, username, password string) *MQTT.ClientOpti
 		opts.SetPassword(password)
 	}
 
-	return opts
+	return MQTT.NewClient(opts)
 }
 
 // publish sends message on a specific topic
 func publish(topic string, message []byte, uri, port, username, password string) error {
-	opts := newMQTTClientOptions(uri, port, username, password)
-	client := MQTT.NewClient(opts)
+	client := newMQTTClient(uri, port, username, password)
+	defer client.Disconnect(250)
 
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
 		return token.Error()
 	}
-	defer client.Disconnect(250)
 
 	t := client.Publish(topic, byte(0), false, message)
 	t.Wait()
@@ -123,14 +122,8 @@ func publish(topic string, message []byte, uri, port, username, password string)
 }
 
 // subscribe receives message on a specific topic
-func subscribe(topic, uri, port, username, password string, recvCh chan MQTT.Message, stopCh chan struct{}) {
-	opts := newMQTTClientOptions(uri, port, username, password)
-
-	opts.SetDefaultPublishHandler(func(client MQTT.Client, msg MQTT.Message) {
-		recvCh <- msg
-	})
-
-	client := MQTT.NewClient(opts)
+func subscribe(topic, uri, port, username, password string, recvCh chan []byte, stopCh chan struct{}) {
+	client := newMQTTClient(uri, port, username, password)
 	defer client.Disconnect(250)
 
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
@@ -138,7 +131,11 @@ func subscribe(topic, uri, port, username, password string, recvCh chan MQTT.Mes
 		return
 	}
 
-	if token := client.Subscribe(topic, byte(1), nil); token.Wait() && token.Error() != nil {
+	handler := func(client MQTT.Client, msg MQTT.Message) {
+		recvCh <- msg.Payload()
+	}
+
+	if token := client.Subscribe(topic, byte(1), handler); token.Wait() && token.Error() != nil {
 		fmt.Println(token.Error())
 		return
 	}
@@ -238,7 +235,7 @@ func ActivateDevice(mac, code, uri, port, username, password string) error {
 // DevicePower subscribe MQTT topic to get device sensor information (power/uptime)
 func DevicePower(mac, uri, port, username, password string) {
 	topic := "device/ztc1/" + mac + "/sensor"
-	recvCh := make(chan MQTT.Message)
+	recvCh := make(chan []byte)
 
 	proc := func(r map[string]interface{}) {
 		power, _ := r["power"]
@@ -251,14 +248,14 @@ func DevicePower(mac, uri, port, username, password string) {
 
 	for {
 		msg := <-recvCh
-		process(msg.Payload(), proc)
+		process(msg, proc)
 	}
 }
 
 // DeviceState subscribe MQTT topic to get device state information (plug on/off state)
 func DeviceState(mac, uri, port, username, password string) {
 	topic := "device/ztc1/" + mac + "/state"
-	recvCh := make(chan MQTT.Message)
+	recvCh := make(chan []byte)
 	stopCh := make(chan struct{})
 
 	proc := func(r map[string]interface{}) {
@@ -283,9 +280,8 @@ func DeviceState(mac, uri, port, username, password string) {
 
 	go subscribe(topic, uri, port, username, password, recvCh, stopCh)
 
-	
 	msg := <-recvCh
-	process(msg.Payload(), proc)
+	process(msg, proc)
 }
 
 // SwitchPlug switches specific plug (0~5) on/off state
